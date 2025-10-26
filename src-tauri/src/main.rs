@@ -3,7 +3,9 @@
     windows_subsystem = "windows"
 )]
 
+use flume::RecvTimeoutError as FlumeRecvTimeoutError;
 use local_ip_address::local_ip;
+use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use regex::Regex;
 use reqwest::blocking::Client;
 use reqwest::StatusCode;
@@ -11,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::command;
 
 fn main() {
@@ -114,6 +116,102 @@ enum TestOutcome {
     NoResponse,
 }
 
+fn record_mdns_service(
+    info: &ServiceInfo,
+    discovered_ips: &mut HashSet<String>,
+    logs: &mut Vec<String>,
+) {
+    let fullname = info.get_fullname().to_lowercase();
+    if !(fullname.contains("sony") || fullname.contains("bravia")) {
+        return;
+    }
+
+    let service_label = info.get_type().trim_end_matches(".local.");
+
+    for addr in info.get_addresses().iter() {
+        if let IpAddr::V4(ipv4) = addr {
+            let ip_str = ipv4.to_string();
+            if discovered_ips.insert(ip_str.clone()) {
+                let msg = format!(
+                    "mDNS found potential TV at {} via {}",
+                    ip_str, service_label
+                );
+                logs.push(msg.clone());
+                println!("[scan_network] {}", msg);
+            }
+        }
+    }
+}
+
+fn discover_tvs_via_mdns(logs: &mut Vec<String>) -> Vec<String> {
+    let mut discovered_ips: HashSet<String> = HashSet::new();
+    let service_types = [
+        "_sonyrc._tcp.local.",
+        "_sonyremote._tcp.local.",
+        "_sonybravia._tcp.local.",
+        "_scalarwebapi._tcp.local.",
+        "_ircc._tcp.local.",
+    ];
+
+    let daemon = match ServiceDaemon::new() {
+        Ok(daemon) => daemon,
+        Err(err) => {
+            let msg = format!("mDNS unavailable: {}", err);
+            logs.push(msg.clone());
+            println!("[scan_network] {}", msg);
+            return Vec::new();
+        }
+    };
+
+    let browse_window = Duration::from_secs(4);
+
+    for service_type in service_types.iter() {
+        match daemon.browse(service_type) {
+            Ok(receiver) => {
+                let deadline = Instant::now() + browse_window;
+                loop {
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+
+                    match receiver.recv_timeout(Duration::from_millis(400)) {
+                        Ok(event) => match event {
+                            ServiceEvent::ServiceResolved(info) => {
+                                record_mdns_service(&info, &mut discovered_ips, logs);
+                            }
+                            ServiceEvent::ServiceRemoved(_, _) | ServiceEvent::SearchStopped(_) => {
+                                break;
+                            }
+                            _ => {}
+                        },
+                        Err(FlumeRecvTimeoutError::Timeout) => {
+                            continue;
+                        }
+                        Err(FlumeRecvTimeoutError::Disconnected) => {
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                let msg = format!("mDNS browse failed for {}: {}", service_type, err);
+                logs.push(msg.clone());
+                println!("[scan_network] {}", msg);
+            }
+        }
+    }
+
+    if let Err(err) = daemon.shutdown() {
+        let msg = format!("mDNS shutdown warning: {}", err);
+        logs.push(msg.clone());
+        println!("[scan_network] {}", msg);
+    }
+
+    let mut ips: Vec<String> = discovered_ips.into_iter().collect();
+    ips.sort();
+    ips
+}
+
 #[command]
 fn scan_network(psk: Option<String>, pin: Option<String>) -> Result<ScanResult, String> {
     let mut logs = Vec::new();
@@ -151,28 +249,13 @@ fn scan_network(psk: Option<String>, pin: Option<String>) -> Result<ScanResult, 
     logs.push("Discovering Sony TVs via mDNS...".to_string());
     println!("[scan_network] Starting mDNS discovery");
 
-    let mdns_ips = Vec::new();
-    // TODO: Implement mDNS discovery
-    // if let Ok(discovery) = mdns::discover::all("_sonytv._tcp.local.", Duration::from_secs(3)) {
-    //     for result in discovery {
-    //         if let Ok(response) = result {
-    //             if let Some(addr) = response.ip_addr() {
-    //                 let ip_str = addr.to_string();
-    //                 logs.push(format!("mDNS found potential TV: {}", ip_str));
-    //                 println!("[scan_network] mDNS: {}", ip_str);
-    //                 mdns_ips.push(ip_str);
-    //             }
-    //         }
-    //     }
-    // } else {
-    //     logs.push("mDNS discovery failed".to_string());
-    // }
+    let mdns_ips = discover_tvs_via_mdns(&mut logs);
 
     logs.push(format!("mDNS discovered {} potential TVs", mdns_ips.len()));
     println!("[scan_network] mDNS found {} TVs", mdns_ips.len());
 
     let mut candidate_ips: Vec<String> = mdns_ips;
-    let mut unique_ips: HashSet<String> = HashSet::new();
+    let mut unique_ips: HashSet<String> = candidate_ips.iter().cloned().collect();
 
     match Command::new("arp").arg("-a").output() {
         Ok(output) if output.status.success() => {
@@ -219,7 +302,10 @@ fn scan_network(psk: Option<String>, pin: Option<String>) -> Result<ScanResult, 
         );
         println!("[scan_network] ARP empty; using fallback range");
         for i in 100..121 {
-            candidate_ips.push(format!("{}{}", subnet, i));
+            let fallback_ip = format!("{}{}", subnet, i);
+            if unique_ips.insert(fallback_ip.clone()) {
+                candidate_ips.push(fallback_ip);
+            }
         }
     }
 
