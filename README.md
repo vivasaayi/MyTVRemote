@@ -22,8 +22,8 @@ A cross-platform Tauri application to control Sony TVs remotely from Mac, iPad, 
 ### TV prerequisites
 
 - Enable remote start/IP control on the TV.
-- If your model supports a Pre-Shared Key (PSK), set one under **Settings → Network &gt; Remote Device Settings** and enter the same value in the app.
-- If your TV uses PIN pairing instead, initiate pairing when prompted on the TV after the first command attempt.
+- If your model supports a Pre-Shared Key (PSK), set one under **Settings → Network → Home Network Setup → Remote Device Settings** and enter the same value in the app.
+- If your TV uses PIN pairing instead, leave PSK blank; when you send the first command, the TV will display a PIN—enter that PIN in the app.
 
 ## Usage
 

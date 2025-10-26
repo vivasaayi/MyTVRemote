@@ -10,6 +10,7 @@ function setupHandlers() {
 
   const ipInput = document.getElementById('tv-ip');
   const pskInput = document.getElementById('tv-psk');
+  const pinInput = document.getElementById('tv-pin');
 
   function loadSettings() {
     try {
@@ -20,6 +21,9 @@ function setupHandlers() {
       if (saved.psk && pskInput) {
         pskInput.value = saved.psk;
       }
+      if (saved.pin && pinInput) {
+        pinInput.value = saved.pin;
+      }
     } catch (err) {
       console.warn('Failed to load saved settings', err);
     }
@@ -28,7 +32,8 @@ function setupHandlers() {
   function persistSettings() {
     const data = {
       ip: ipInput?.value?.trim() || '',
-      psk: pskInput?.value?.trim() || ''
+      psk: pskInput?.value?.trim() || '',
+      pin: pinInput?.value?.trim() || ''
     };
     localStorage.setItem('sonyTvSettings', JSON.stringify(data));
     return data;
@@ -40,15 +45,17 @@ function setupHandlers() {
   ipInput?.addEventListener('blur', persistSettings);
   pskInput?.addEventListener('change', persistSettings);
   pskInput?.addEventListener('blur', persistSettings);
+  pinInput?.addEventListener('change', persistSettings);
+  pinInput?.addEventListener('blur', persistSettings);
 
   async function send(code) {
-    const { ip, psk } = persistSettings();
+    const { ip, psk, pin } = persistSettings();
     if (!ip) {
       alert('Enter the TV IP address first.');
       return;
     }
     try {
-      const result = await invoke('send_ircc', { ip, code, psk: psk || null });
+      const result = await invoke('send_ircc', { ip, code, psk: psk || null, pin: pin || null });
       console.log(result);
       alert(result);
     } catch (err) {
@@ -70,8 +77,8 @@ function setupHandlers() {
     }
 
     try {
-      const { psk } = persistSettings();
-      const result = await invoke('scan_network', { psk: psk || null });
+      const { psk, pin } = persistSettings();
+      const result = await invoke('scan_network', { psk: psk || null, pin: pin || null });
       if (logDiv) {
         logDiv.innerHTML = result.logs.map(log => `<p>${log}</p>`).join('');
       }

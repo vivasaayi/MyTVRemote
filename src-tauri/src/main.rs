@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::process::Command;
+use std::time::Duration;
 use tauri::command;
 
 fn main() {
@@ -21,42 +22,57 @@ fn main() {
 }
 
 #[command]
-fn send_ircc(ip: String, code: String, psk: Option<String>) -> Result<String, String> {
-    let url = format!("http://{}:80/sony/IRCC", ip);
+fn send_ircc(
+    ip: String,
+    code: String,
+    psk: Option<String>,
+    pin: Option<String>,
+) -> Result<String, String> {
     let body = format!(
         r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:X_SendIRCC xmlns:u="urn:schemas-sony-com:service:IRCC:1"><IRCCCode>{}</IRCCCode></u:X_SendIRCC></s:Body></s:Envelope>"#,
         code
     );
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+    let client = build_client(5).map_err(|e| format!("Failed to build HTTP client: {}", e))?;
 
     let trimmed_psk = psk.unwrap_or_default().trim().to_string();
+    let trimmed_pin = pin.unwrap_or_default().trim().to_string();
 
-    let mut request = client
-        .post(&url)
-        .header("Content-Type", "text/xml; charset=UTF-8")
-        .header(
-            "SOAPACTION",
-            r#""urn:schemas-sony-com:service:IRCC:1#X_SendIRCC""#,
-        )
-        .body(body);
+    let mut last_error: Option<String> = None;
 
-    if !trimmed_psk.is_empty() {
-        request = request.header("X-Auth-PSK", trimmed_psk.clone());
+    for transport in [Transport::Http, Transport::Https] {
+        match perform_ircc_request(&client, &ip, &body, &trimmed_psk, &trimmed_pin, transport) {
+            Ok(status) => {
+                if status.is_success() {
+                    let via = transport.label();
+                    return Ok(format!("Command sent successfully via {}", via));
+                } else if matches!(status, StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED) {
+                    let via = transport.label();
+                    return Err(format!("TV rejected the command (HTTP {}) via {}. Ensure the Pre-Shared Key matches the one configured on the TV or complete PIN pairing.", status.as_u16(), via));
+                } else if transport == Transport::Http {
+                    println!(
+                        "[send_ircc] {} responded with HTTP {} over HTTP; retrying with HTTPS",
+                        ip, status
+                    );
+                    last_error = Some(format!("HTTP {}", status));
+                    continue;
+                } else {
+                    return Err(format!("Failed to send command via HTTPS: HTTP {}", status));
+                }
+            }
+            Err(err) => {
+                println!(
+                    "[send_ircc] {} request over {} failed: {}",
+                    ip,
+                    transport.label(),
+                    err
+                );
+                last_error = Some(err.to_string());
+                continue;
+            }
+        }
     }
 
-    let response = request.send().map_err(|e| e.to_string())?;
-    let status = response.status();
-
-    if status.is_success() {
-        Ok("Command sent successfully".to_string())
-    } else if matches!(status, StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED) {
-        Err("TV rejected the command (HTTP 403/401). Ensure the Pre-Shared Key matches the one configured on the TV or complete PIN pairing.".to_string())
-    } else {
-        Err(format!("Failed to send command: HTTP {}", status))
-    }
+    Err(last_error.unwrap_or_else(|| "Unable to reach TV over HTTP or HTTPS.".to_string()))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -65,19 +81,47 @@ struct ScanResult {
     logs: Vec<String>,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Transport {
+    Http,
+    Https,
+}
+
+impl Transport {
+    fn label(self) -> &'static str {
+        match self {
+            Transport::Http => "HTTP",
+            Transport::Https => "HTTPS",
+        }
+    }
+
+    fn url(self, ip: &str) -> String {
+        match self {
+            Transport::Http => format!("http://{}/sony/IRCC", ip),
+            Transport::Https => format!("https://{}/sony/IRCC", ip),
+        }
+    }
+}
+
 enum TestOutcome {
-    Reachable,
-    AuthRequired(StatusCode),
+    Reachable {
+        transport: Transport,
+    },
+    AuthRequired {
+        status: StatusCode,
+        transport: Transport,
+    },
     NoResponse,
 }
 
 #[command]
-fn scan_network(psk: Option<String>) -> Result<ScanResult, String> {
+fn scan_network(psk: Option<String>, pin: Option<String>) -> Result<ScanResult, String> {
     let mut logs = Vec::new();
     logs.push("Starting network scan for Sony TVs...".to_string());
     println!("[scan_network] Starting network scan");
 
     let trimmed_psk = psk.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let trimmed_pin = pin.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
 
     let local_ip = local_ip().map_err(|e| {
         let msg = format!("Failed to get local IP: {}", e);
@@ -104,7 +148,30 @@ fn scan_network(psk: Option<String>) -> Result<ScanResult, String> {
         }
     };
 
-    let mut candidate_ips: Vec<String> = Vec::new();
+    logs.push("Discovering Sony TVs via mDNS...".to_string());
+    println!("[scan_network] Starting mDNS discovery");
+
+    let mdns_ips = Vec::new();
+    // TODO: Implement mDNS discovery
+    // if let Ok(discovery) = mdns::discover::all("_sonytv._tcp.local.", Duration::from_secs(3)) {
+    //     for result in discovery {
+    //         if let Ok(response) = result {
+    //             if let Some(addr) = response.ip_addr() {
+    //                 let ip_str = addr.to_string();
+    //                 logs.push(format!("mDNS found potential TV: {}", ip_str));
+    //                 println!("[scan_network] mDNS: {}", ip_str);
+    //                 mdns_ips.push(ip_str);
+    //             }
+    //         }
+    //     }
+    // } else {
+    //     logs.push("mDNS discovery failed".to_string());
+    // }
+
+    logs.push(format!("mDNS discovered {} potential TVs", mdns_ips.len()));
+    println!("[scan_network] mDNS found {} TVs", mdns_ips.len());
+
+    let mut candidate_ips: Vec<String> = mdns_ips;
     let mut unique_ips: HashSet<String> = HashSet::new();
 
     match Command::new("arp").arg("-a").output() {
@@ -160,19 +227,23 @@ fn scan_network(psk: Option<String>) -> Result<ScanResult, String> {
 
     let mut found_tvs = Vec::new();
 
-    for ip in candidate_ips {
+    for ip in &candidate_ips {
         logs.push(format!("Testing IP: {}...", ip));
         println!("[scan_network] Testing {}", ip);
-        match test_tv_connection(&ip, &trimmed_psk) {
-            TestOutcome::Reachable => {
-                logs.push(format!("Found Sony TV at: {}", ip));
-                println!("[scan_network] SUCCESS {}", ip);
-                found_tvs.push(ip);
+        match test_tv_connection(ip.as_str(), &trimmed_psk, &trimmed_pin) {
+            TestOutcome::Reachable { transport } => {
+                logs.push(format!("Found Sony TV at: {} ({})", ip, transport.label()));
+                println!("[scan_network] SUCCESS {} via {}", ip, transport.label());
+                found_tvs.push(ip.clone());
             }
-            TestOutcome::AuthRequired(status) => {
-                logs.push(format!("Warning: Sony TV at {} requires authentication (HTTP {}). Enter the correct Pre-Shared Key or complete PIN pairing.", ip, status));
-                println!("[scan_network] AUTH REQUIRED {}", ip);
-                found_tvs.push(ip);
+            TestOutcome::AuthRequired { status, transport } => {
+                logs.push(format!("Warning: Sony TV at {} requires authentication (HTTP {}) via {}. Enter the correct Pre-Shared Key or complete PIN pairing.", ip, status, transport.label()));
+                println!(
+                    "[scan_network] AUTH REQUIRED {} via {}",
+                    ip,
+                    transport.label()
+                );
+                found_tvs.push(ip.clone());
             }
             TestOutcome::NoResponse => {
                 logs.push(format!("No response from: {}", ip));
@@ -200,14 +271,8 @@ fn scan_network(psk: Option<String>) -> Result<ScanResult, String> {
     })
 }
 
-fn test_tv_connection(ip: &str, psk: &Option<String>) -> TestOutcome {
-    let url = format!("http://{}:80/sony/IRCC", ip);
-    let body = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:X_SendIRCC xmlns:u="urn:schemas-sony-com:service:IRCC:1"><IRCCCode>AAAAAQAAAAEAAAAvAw==</IRCCCode></u:X_SendIRCC></s:Body></s:Envelope>"#;
-
-    let client = match Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()
-    {
+fn test_tv_connection(ip: &str, psk: &Option<String>, pin: &Option<String>) -> TestOutcome {
+    let client = match build_client(2) {
         Ok(client) => client,
         Err(err) => {
             println!("[scan_network] Failed to build reqwest client: {}", err);
@@ -215,33 +280,102 @@ fn test_tv_connection(ip: &str, psk: &Option<String>) -> TestOutcome {
         }
     };
 
+    let probe_body = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:X_SendIRCC xmlns:u="urn:schemas-sony-com:service:IRCC:1"><IRCCCode>AAAAAQAAAAEAAAAvAw==</IRCCCode></u:X_SendIRCC></s:Body></s:Envelope>"#;
+    let psk_value = psk.as_deref().unwrap_or("").trim().to_string();
+    let pin_value = pin.as_deref().unwrap_or("").trim().to_string();
+    let mut last_error: Option<String> = None;
+
+    for transport in [Transport::Http, Transport::Https] {
+        match perform_ircc_request(&client, ip, probe_body, &psk_value, &pin_value, transport) {
+            Ok(status) => {
+                if status.is_success() {
+                    return TestOutcome::Reachable { transport };
+                }
+                if matches!(status, StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED) {
+                    return TestOutcome::AuthRequired { status, transport };
+                }
+                if transport == Transport::Http {
+                    println!(
+                        "[scan_network] {} responded with HTTP {} over HTTP; retrying with HTTPS",
+                        ip, status
+                    );
+                    last_error = Some(format!("HTTP {}", status));
+                    continue;
+                }
+                println!(
+                    "[scan_network] {} responded with HTTP {} over HTTPS",
+                    ip, status
+                );
+                return TestOutcome::NoResponse;
+            }
+            Err(err) => {
+                println!(
+                    "[scan_network] {} request over {} failed: {}",
+                    ip,
+                    transport.label(),
+                    err
+                );
+                last_error = Some(err.to_string());
+                continue;
+            }
+        }
+    }
+
+    if let Some(err) = last_error {
+        println!("[scan_network] HTTP error while probing {}: {}", ip, err);
+    }
+
+    TestOutcome::NoResponse
+}
+
+fn build_client(timeout_secs: u64) -> Result<Client, reqwest::Error> {
+    Client::builder()
+        .timeout(Duration::from_secs(timeout_secs))
+        .danger_accept_invalid_certs(true)
+        .build()
+}
+
+fn perform_ircc_request(
+    client: &Client,
+    ip: &str,
+    body: &str,
+    psk: &str,
+    pin: &str,
+    transport: Transport,
+) -> Result<StatusCode, reqwest::Error> {
     let mut request = client
-        .post(&url)
+        .post(transport.url(ip))
         .header("Content-Type", "text/xml; charset=UTF-8")
         .header(
             "SOAPACTION",
             r#""urn:schemas-sony-com:service:IRCC:1#X_SendIRCC""#,
         )
-        .body(body);
+        .body(body.to_string());
 
-    if let Some(psk_value) = psk {
-        request = request.header("X-Auth-PSK", psk_value);
+    if !psk.is_empty() {
+        request = request.header("X-Auth-PSK", psk);
+    }
+    if !pin.is_empty() {
+        request = request.header("X-Auth-PIN", pin);
     }
 
-    match request.send() {
-        Ok(response) if response.status().is_success() => TestOutcome::Reachable,
-        Ok(response)
-            if matches!(
-                response.status(),
-                StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED
-            ) =>
-        {
-            TestOutcome::AuthRequired(response.status())
-        }
-        Ok(_) => TestOutcome::NoResponse,
-        Err(err) => {
-            println!("[scan_network] HTTP error while probing {}: {}", ip, err);
-            TestOutcome::NoResponse
+    let response = request.send()?;
+    let status = response.status();
+
+    if status.is_success() {
+        // Check if this is actually a Sony TV by examining the response body
+        if let Ok(text) = response.text() {
+            if text.contains("Sony") || text.contains("urn:schemas-sony-com") {
+                return Ok(status);
+            } else {
+                println!(
+                    "[perform_ircc_request] {} responded with success but not Sony-specific content",
+                    ip
+                );
+                return Ok(StatusCode::NOT_FOUND); // Treat as not found
+            }
         }
     }
+
+    Ok(status)
 }

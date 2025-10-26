@@ -22,10 +22,11 @@
   <div class="scan-section">
     <input type="text" id="tv-ip" placeholder="TV IP Address" value="192.168.1.100">
     <input type="text" id="tv-psk" placeholder="Pre-Shared Key (if enabled)">
+    <input type="text" id="tv-pin" placeholder="PIN (if prompted by TV)">
     <br>
     <button id="scan-btn" onclick="scanNetwork()">Scan Network for TVs</button>
     <div id="scan-log"></div>
-    <small style="color:#333; display:block; margin-top:6px; max-width:400px; margin-left:auto; margin-right:auto;">Set a Pre-Shared Key on your TV under Network &gt; Home Network Setup &gt; Remote Device Settings, then enter it here. Leave blank if your TV uses PIN pairing.</small>
+    <small style="color:#333; display:block; margin-top:6px; max-width:400px; margin-left:auto; margin-right:auto;">Set a Pre-Shared Key on your TV under Network &gt; Home Network Setup &gt; Remote Device Settings, then enter it here. For PIN pairing, leave PSK blank and enter the PIN shown on TV after first command attempt.</small>
   </div>
   <div class="remote">
     <div class="row">
