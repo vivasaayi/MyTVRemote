@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sony TV Remote</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; background: #f0f0f0; padding: 20px; }
+    .remote { display: inline-block; background: #333; color: white; padding: 20px; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.5); }
+    input { margin: 10px; padding: 8px; width: 200px; border: 1px solid #ccc; border-radius: 5px; }
+    button { margin: 5px; padding: 12px 20px; background: #555; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }
+    button:hover { background: #777; }
+    button:disabled { background: #888; cursor: not-allowed; }
+    .row { display: flex; justify-content: center; }
+    .scan-section { margin-bottom: 20px; }
+    #scan-log { background: #fff; border: 1px solid #ccc; border-radius: 5px; padding: 10px; margin: 10px auto; max-width: 400px; text-align: left; font-family: monospace; font-size: 12px; display: none; max-height: 200px; overflow-y: auto; }
+    #scan-log p { margin: 2px 0; }
+  </style>
+</head>
+<body>
+  <h1>Sony TV Remote</h1>
+  <div class="scan-section">
+    <input type="text" id="tv-ip" placeholder="TV IP Address" value="192.168.1.100">
+    <br>
+    <button id="scan-btn" onclick="scanNetwork()">Scan Network for TVs</button>
+    <div id="scan-log"></div>
+  </div>
+  <div class="remote">
+    <div class="row">
+      <button onclick="send('AAAAAQAAAAEAAAAvAw==')">Power</button>
+    </div>
+    <div class="row">
+      <button onclick="send('AAAAAQAAAAEAAAASAw==')">Vol +</button>
+      <button onclick="send('AAAAAQAAAAEAAAATAw==')">Vol -</button>
+    </div>
+    <div class="row">
+      <button onclick="send('AAAAAQAAAAEAAAAQAw==')">Ch +</button>
+      <button onclick="send('AAAAAQAAAAEAAAARAw==')">Ch -</button>
+    </div>
+    <div class="row">
+      <button onclick="send('AAAAAQAAAAEAAAAUAw==')">Mute</button>
+      <button onclick="send('AAAAAQAAAAEAAAAlAw==')">Input</button>
+    </div>
+  </div>
+  <script src="/__tauri__/tauri.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>

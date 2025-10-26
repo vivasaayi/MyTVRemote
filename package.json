@@ -1,0 +1,10 @@
+{
+  "name": "sony-tv-remote",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "cp src/* dist/",
+    "dev": "cp src/* dist/"
+  }
+}
