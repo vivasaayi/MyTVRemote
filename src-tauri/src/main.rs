@@ -122,19 +122,25 @@ fn record_mdns_service(
     logs: &mut Vec<String>,
 ) {
     let fullname = info.get_fullname().to_lowercase();
-    if !(fullname.contains("sony") || fullname.contains("bravia")) {
+    let service_label = info.get_type().trim_end_matches(".local.");
+
+    // Collect IPs from known TV services, even if name doesn't match
+    let is_tv_service = matches!(
+        service_label,
+        "_sonyrc" | "_sonyremote" | "_sonybravia" | "_scalarwebapi" | "_ircc" | "_sonytv" | "_airplay" | "_googlecast" | "_raop"
+    );
+
+    if !is_tv_service {
         return;
     }
-
-    let service_label = info.get_type().trim_end_matches(".local.");
 
     for addr in info.get_addresses().iter() {
         if let IpAddr::V4(ipv4) = addr {
             let ip_str = ipv4.to_string();
             if discovered_ips.insert(ip_str.clone()) {
                 let msg = format!(
-                    "mDNS found potential TV at {} via {}",
-                    ip_str, service_label
+                    "mDNS found potential TV at {} via {} ({})",
+                    ip_str, service_label, fullname
                 );
                 logs.push(msg.clone());
                 println!("[scan_network] {}", msg);
@@ -151,6 +157,10 @@ fn discover_tvs_via_mdns(logs: &mut Vec<String>) -> Vec<String> {
         "_sonybravia._tcp.local.",
         "_scalarwebapi._tcp.local.",
         "_ircc._tcp.local.",
+        "_sonytv._tcp.local.",
+        "_airplay._tcp.local.",
+        "_googlecast._tcp.local.",
+        "_raop._tcp.local.",
     ];
 
     let daemon = match ServiceDaemon::new() {
@@ -166,6 +176,8 @@ fn discover_tvs_via_mdns(logs: &mut Vec<String>) -> Vec<String> {
     let browse_window = Duration::from_secs(4);
 
     for service_type in service_types.iter() {
+        logs.push(format!("Browsing mDNS service: {}", service_type));
+        println!("[scan_network] Browsing mDNS service: {}", service_type);
         match daemon.browse(service_type) {
             Ok(receiver) => {
                 let deadline = Instant::now() + browse_window;

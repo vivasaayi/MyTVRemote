@@ -5,8 +5,8 @@
   "mainBinaryName": "sony-tv-remote",
   "identifier": "com.sony.tv.remote",
   "build": {
-    "beforeDevCommand": "",
-    "beforeBuildCommand": "",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173"
   },
