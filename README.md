@@ -19,10 +19,16 @@ A cross-platform Tauri application to control Sony TVs remotely from Mac, iPad, 
 2. Build the backend: `cd src-tauri && cargo build`
 3. Run in development: `cargo tauri dev`
 
+### TV prerequisites
+
+- Enable remote start/IP control on the TV.
+- If your model supports a Pre-Shared Key (PSK), set one under **Settings → Network &gt; Remote Device Settings** and enter the same value in the app.
+- If your TV uses PIN pairing instead, initiate pairing when prompted on the TV after the first command attempt.
+
 ## Usage
 
 1. Launch the app.
-2. Enter your Sony TV's IP address (find it in TV settings > Network).
+2. Enter your Sony TV's IP address (find it in TV settings &gt; Network) and optional PSK.
 3. Click the buttons to control the TV.
 
 Note: Ensure the TV and device are on the same network, and IP control is enabled on the TV.
