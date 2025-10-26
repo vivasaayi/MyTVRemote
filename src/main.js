@@ -3,12 +3,8 @@ function setupHandlers() {
   const invoke = tauri?.core?.invoke ?? tauri?.invoke;
 
   if (typeof invoke !== 'function') {
-    console.error('Tauri invoke API not available yet.');
-    const logDiv = document.getElementById('scan-log');
-    if (logDiv) {
-      logDiv.innerHTML = '<p style="color:red;">Tauri API not ready. Please restart the app.</p>';
-      logDiv.style.display = 'block';
-    }
+    console.error('Tauri invoke API not available yet. Retrying...');
+    setTimeout(setupHandlers, 100);
     return;
   }
 
@@ -28,20 +24,20 @@ function setupHandlers() {
     const button = document.getElementById('scan-btn');
     const logDiv = document.getElementById('scan-log');
     const originalText = button.textContent;
-    
+
     button.textContent = 'Scanning...';
     button.disabled = true;
     if (logDiv) {
       logDiv.innerHTML = '<p>Starting scan...</p>';
       logDiv.style.display = 'block';
     }
-    
+
     try {
       const result = await invoke('scan_network');
       if (logDiv) {
         logDiv.innerHTML = result.logs.map(log => `<p>${log}</p>`).join('');
       }
-      
+
       if (result.ips.length > 0) {
         document.getElementById('tv-ip').value = result.ips[0];
         alert(`Found ${result.ips.length} TV(s): ${result.ips.join(', ')}\nSet to: ${result.ips[0]}`);
