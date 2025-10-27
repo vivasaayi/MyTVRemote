@@ -20,11 +20,35 @@ use std::time::{Duration, Instant};
 use std::thread;
 use tauri::command;
 
-fn main() {
-    tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![send_ircc, scan_network])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+#[command]
+fn test_connection(ip: String) -> Result<String, String> {
+    println!("[test_connection] Testing connection to {}", ip);
+    
+    let output = Command::new("/sbin/ping")
+        .arg("-c")
+        .arg("4")
+        .arg(&ip)
+        .output()
+        .map_err(|e| {
+            println!("[test_connection] Failed to run ping command: {}", e);
+            format!("Failed to run ping: {}", e)
+        })?;
+    
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let status = output.status;
+    
+    println!("[test_connection] Ping status: {}", status);
+    println!("[test_connection] Ping stdout: {}", stdout);
+    println!("[test_connection] Ping stderr: {}", stderr);
+    
+    if status.success() {
+        println!("[test_connection] Ping successful");
+        Ok(format!("Connection successful:\n{}", stdout))
+    } else {
+        println!("[test_connection] Ping failed");
+        Err(format!("Connection failed:\nStatus: {}\nStdout: {}\nStderr: {}", status, stdout, stderr))
+    }
 }
 
 #[command]
@@ -80,6 +104,50 @@ fn send_ircc(
     }
 
     Err(last_error.unwrap_or_else(|| "Unable to reach TV over HTTP or HTTPS.".to_string()))
+}
+
+#[command]
+fn cast_launch_app(ip: String, app_name: String, psk: Option<String>) -> Result<String, String> {
+    println!("[cast_launch_app] Starting app launch for '{}' on TV at {}", app_name, ip);
+    
+    let client = build_client(10).map_err(|e| {
+        println!("[cast_launch_app] Failed to build HTTP client: {}", e);
+        format!("Failed to build HTTP client: {}", e)
+    })?;
+    
+    let app_id = app_name.clone();
+    let url = format!("http://{}:8008/apps/{}", ip, app_id);
+    println!("[cast_launch_app] Using URL: {}", url);
+    
+    let mut request = client.post(&url);
+    
+    if let Some(ref psk_val) = psk {
+        if !psk_val.trim().is_empty() {
+            request = request.header("X-Auth-PSK", psk_val.trim());
+            println!("[cast_launch_app] Added X-Auth-PSK header");
+        } else {
+            println!("[cast_launch_app] PSK provided but empty, skipping header");
+        }
+    } else {
+        println!("[cast_launch_app] No PSK provided");
+    }
+    
+    println!("[cast_launch_app] Sending POST request...");
+    let response = request.send().map_err(|e| {
+        println!("[cast_launch_app] Request failed: {}", e);
+        format!("Failed to send request to {}: {}", url, e)
+    })?;
+    
+    let status = response.status();
+    println!("[cast_launch_app] Response status: {}", status);
+    
+    if status.is_success() {
+        println!("[cast_launch_app] Launch successful");
+        Ok(format!("Successfully launched {} on TV at {}", app_name, ip))
+    } else {
+        println!("[cast_launch_app] Launch failed with status {}", status);
+        Err(format!("Failed to launch {}: HTTP {}", app_name, status))
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1119,4 +1187,11 @@ fn perform_ircc_request(
     }
 
     Ok(status)
+}
+
+fn main() {
+    tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![send_ircc, scan_network, cast_launch_app, test_connection])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }

@@ -34,6 +34,7 @@
     <input type="text" id="tv-pin" placeholder="PIN (if prompted by TV)">
     <br>
     <button id="scan-btn" onclick="scanNetwork()">Scan Network for TVs</button>
+    <button id="test-conn-btn" onclick="testConnection()">Test Connection</button>
     <div id="scan-log"></div>
     <small style="color:#333; display:block; margin-top:6px; max-width:400px; margin-left:auto; margin-right:auto;">Set a Pre-Shared Key on your TV under Network &gt; Home Network Setup &gt; Remote Device Settings, then enter it here. For PIN pairing, leave PSK blank and enter the PIN shown on TV after first command attempt.</small>
   </div>
@@ -65,6 +66,21 @@
     <div class="row">
       <button onclick="send('AAAAAQAAAAEAAAAUAw==')">Mute</button>
       <button onclick="send('AAAAAQAAAAEAAAAlAw==')">Input</button>
+    </div>
+  </div>
+  <div class="remote" style="margin-top: 20px; background: #2e7d32;">
+    <h3 style="margin-top: 0; color: white;">Google Cast Apps</h3>
+    <div class="row">
+      <button onclick="castLaunchApp('YouTube')">YouTube</button>
+      <button onclick="castLaunchApp('Netflix')">Netflix</button>
+    </div>
+    <div class="row">
+      <button onclick="castLaunchApp('PrimeVideo')">Prime Video</button>
+      <button onclick="castLaunchApp('DisneyPlus')">Disney+</button>
+    </div>
+    <div class="row">
+      <button onclick="castLaunchApp('Hulu')">Hulu</button>
+      <button onclick="castLaunchApp('HBO')">HBO</button>
     </div>
   </div>
   <script src="main.js"></script>

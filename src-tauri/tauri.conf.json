@@ -11,8 +11,11 @@
     "devUrl": "http://localhost:5173"
   },
   "bundle": {
-    "active": true,
-    "targets": "all"
+    "active": false,
+    "targets": "all",
+    "macOS": {
+      "entitlements": "Entitlements.plist"
+    }
   },
   "app": {
     "withGlobalTauri": true,

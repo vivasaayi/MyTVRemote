@@ -75,6 +75,22 @@ function setupHandlers() {
     }
   }
 
+  async function castLaunchApp(appName) {
+    const { ip, psk } = persistSettings();
+    if (!ip) {
+      alert('Enter the TV IP address first.');
+      return;
+    }
+    try {
+      const result = await invokeFn('cast_launch_app', { ip, appName, psk: psk || null });
+      console.log(result);
+      alert(result);
+    } catch (err) {
+      console.error(err);
+      alert('Error: ' + err);
+    }
+  }
+
   function populateTab(tabId, devices) {
     const tabContent = document.getElementById(tabId);
     if (!tabContent) return;
@@ -221,8 +237,25 @@ function setupHandlers() {
     }
   }
 
+  async function testConnection() {
+    const { ip } = persistSettings();
+    if (!ip) {
+      alert('Enter the TV IP address first.');
+      return;
+    }
+    try {
+      const result = await invokeFn('test_connection', { ip });
+      console.log(result);
+      alert(result);
+    } catch (err) {
+      console.error(err);
+      alert('Error: ' + err);
+    }
+  }
   window.send = send;
   window.scanNetwork = scanNetwork;
+  window.castLaunchApp = castLaunchApp;
+  window.testConnection = testConnection;
 }
 
 if (document.readyState === 'loading') {
