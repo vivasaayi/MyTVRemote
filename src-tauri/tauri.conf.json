@@ -2,7 +2,6 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Sony TV Remote",
   "version": "0.1.0",
-  "mainBinaryName": "sony-tv-remote",
   "identifier": "com.sony.tv.remote",
   "build": {
     "beforeDevCommand": "npm run dev",

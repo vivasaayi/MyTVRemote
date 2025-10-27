@@ -51,27 +51,47 @@
     <div id="ssdp-tab" class="tab-content"></div>
     <div id="arp-tab" class="tab-content"></div>
   </div>
-  <div class="remote">
+  <div class="remote" style="background: #ff9800;">
+    <h3 style="margin-top: 0; color: white;">Android TV Remote Control (Unavailable)</h3>
+    <p style="color: white; margin: 10px 0;">⚠️ Remote control functionality is currently unavailable. The required Android TV Remote library could not be loaded.</p>
+    <p style="color: white; margin: 10px 0; font-size: 14px;">Use IRCC commands with PSK or PIN authentication instead. Buttons remain disabled to avoid confusion.</p>
     <div class="row">
-      <button onclick="send('AAAAAQAAAAEAAAAvAw==')">Power</button>
+      <button onclick="sendRemoteKey('power')" disabled style="opacity: 0.4;">Power</button>
     </div>
     <div class="row">
-      <button onclick="send('AAAAAQAAAAEAAAASAw==')">Vol +</button>
-      <button onclick="send('AAAAAQAAAAEAAAATAw==')">Vol -</button>
+      <button onclick="sendRemoteKey('volume_up')" disabled style="opacity: 0.4;">Vol +</button>
+      <button onclick="sendRemoteKey('volume_down')" disabled style="opacity: 0.4;">Vol -</button>
     </div>
     <div class="row">
-      <button onclick="send('AAAAAQAAAAEAAAAQAw==')">Ch +</button>
-      <button onclick="send('AAAAAQAAAAEAAAARAw==')">Ch -</button>
+      <button onclick="sendRemoteKey('up')" disabled style="opacity: 0.4;">Up</button>
     </div>
     <div class="row">
-      <button onclick="send('AAAAAQAAAAEAAAAUAw==')">Mute</button>
-      <button onclick="send('AAAAAQAAAAEAAAAlAw==')">Input</button>
+      <button onclick="sendRemoteKey('left')" disabled style="opacity: 0.4;">Left</button>
+      <button onclick="sendRemoteKey('enter')" disabled style="opacity: 0.4;">Enter</button>
+      <button onclick="sendRemoteKey('right')" disabled style="opacity: 0.4;">Right</button>
+    </div>
+    <div class="row">
+      <button onclick="sendRemoteKey('down')" disabled style="opacity: 0.4;">Down</button>
+    </div>
+    <div class="row">
+      <button onclick="sendRemoteKey('back')" disabled style="opacity: 0.4;">Back</button>
+      <button onclick="sendRemoteKey('home')" disabled style="opacity: 0.4;">Home</button>
+    </div>
+    <div class="row">
+      <button onclick="sendRemoteKey('menu')" disabled style="opacity: 0.4;">Menu</button>
+      <button onclick="sendRemoteKey('mute')" disabled style="opacity: 0.4;">Mute</button>
     </div>
   </div>
-  <div class="remote" style="margin-top: 20px; background: #2e7d32;">
-    <h3 style="margin-top: 0; color: white;">Custom App Launch</h3>
-    <input type="text" id="custom-app" placeholder="Enter App ID (e.g., YouTube, Netflix)" style="margin: 10px; padding: 8px; width: 200px;">
-    <button onclick="launchCustomApp()">Launch Custom App</button>
+  <div class="remote" style="margin-top: 20px; background: #4caf50;">
+    <h3 style="margin-top: 0; color: white;">Android TV Pairing (Scalar API)</h3>
+    <p style="color: white; margin: 10px 0;">Start pairing to make the TV display a PIN, then enter that PIN below to register this app.</p>
+    <button onclick="startPairing()">Start Pairing</button>
+    <input type="text" id="pairing-status" placeholder="Client ID / Status" readonly>
+    <input type="text" id="pairing-pin" placeholder="Enter PIN from TV">
+    <button onclick="completePairing()">Complete Pairing</button>
+  <textarea id="pairing-log" readonly style="width: 100%; height: 120px; margin-top: 12px; border-radius: 6px; padding: 10px; resize: vertical; font-family: 'Courier New', monospace; font-size: 12px;">Pairing logs will appear here...
+</textarea>
+    <small style="color: white; display: block; margin-top: 10px;">After a successful pairing, save the Client ID and User ID for authenticated API calls.</small>
   </div>
   <script src="main.js"></script>
 </body>

@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+option java_outer_classname = "PoloProto";
+option java_package = "com.google.polo.wire.protobuf";
+option optimize_for = LITE_RUNTIME;
+
+package google.polo.wire.protobuf;
+
+// OuterMessage - base outer message type used in the protocol.
+
+message OuterMessage {
+  // Protocol status states.
+  enum Status {
+    STATUS_OK = 0;
+    STATUS_ERROR = 1;
+    STATUS_BAD_CONFIGURATION = 2;
+    STATUS_BAD_SECRET = 3;
+  }
+
+  uint32 protocol_version = 1;
+  Status status = 2;
+
+  // Initialization phase
+  PairingRequest pairing_request = 10;
+  PairingRequestAck pairing_request_ack = 11;
+
+  // Configuration phase
+  Options options = 20;
+  Configuration configuration = 30;
+  ConfigurationAck configuration_ack = 31;
+
+  // Pairing phase
+  Secret secret = 40;
+  SecretAck secret_ack = 41;
+}
+
+// Initialization messages
+
+message PairingRequest {
+  string service_name = 1;
+  string client_name = 2;
+}
+
+message PairingRequestAck {
+  string server_name = 1;
+}
+
+// Configuration messages
+
+message Options {
+  message Encoding {
+    enum EncodingType {
+      ENCODING_TYPE_UNKNOWN = 0;
+      ENCODING_TYPE_ALPHANUMERIC = 1;
+      ENCODING_TYPE_NUMERIC = 2;
+      ENCODING_TYPE_HEXADECIMAL = 3;
+      ENCODING_TYPE_QRCODE = 4;
+    }
+
+    EncodingType type = 1;
+    uint32 symbol_length = 2;
+  }
+
+  enum RoleType {
+    ROLE_TYPE_UNKNOWN = 0;
+    ROLE_TYPE_INPUT = 1;
+    ROLE_TYPE_OUTPUT = 2;
+  }
+
+  repeated Encoding input_encodings = 1;
+  repeated Encoding output_encodings = 2;
+  RoleType preferred_role = 3;
+}
+
+message Configuration {
+  Options.Encoding encoding = 1;
+  Options.RoleType client_role = 2;
+}
+
+message ConfigurationAck {
+}
+
+// Pairing messages
+
+message Secret {
+  bytes secret = 1;
+}
+
+message SecretAck {
+  bytes secret = 1;
+}
