@@ -252,10 +252,32 @@ function setupHandlers() {
       alert('Error: ' + err);
     }
   }
+  async function launchCustomApp() {
+    const appName = document.getElementById('custom-app').value.trim();
+    if (!appName) {
+      alert('Enter an app ID first.');
+      return;
+    }
+    const { ip, psk } = persistSettings();
+    if (!ip) {
+      alert('Enter the TV IP address first.');
+      return;
+    }
+    try {
+      const result = await invokeFn('cast_launch_app', { ip, appName, psk: psk || null });
+      console.log(result);
+      alert(result);
+    } catch (err) {
+      console.error(err);
+      alert('Error: ' + err);
+    }
+  }
+
   window.send = send;
   window.scanNetwork = scanNetwork;
   window.castLaunchApp = castLaunchApp;
   window.testConnection = testConnection;
+  window.launchCustomApp = launchCustomApp;
 }
 
 if (document.readyState === 'loading') {

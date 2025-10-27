@@ -69,19 +69,9 @@
     </div>
   </div>
   <div class="remote" style="margin-top: 20px; background: #2e7d32;">
-    <h3 style="margin-top: 0; color: white;">Google Cast Apps</h3>
-    <div class="row">
-      <button onclick="castLaunchApp('YouTube')">YouTube</button>
-      <button onclick="castLaunchApp('Netflix')">Netflix</button>
-    </div>
-    <div class="row">
-      <button onclick="castLaunchApp('PrimeVideo')">Prime Video</button>
-      <button onclick="castLaunchApp('DisneyPlus')">Disney+</button>
-    </div>
-    <div class="row">
-      <button onclick="castLaunchApp('Hulu')">Hulu</button>
-      <button onclick="castLaunchApp('HBO')">HBO</button>
-    </div>
+    <h3 style="margin-top: 0; color: white;">Custom App Launch</h3>
+    <input type="text" id="custom-app" placeholder="Enter App ID (e.g., YouTube, Netflix)" style="margin: 10px; padding: 8px; width: 200px;">
+    <button onclick="launchCustomApp()">Launch Custom App</button>
   </div>
   <script src="main.js"></script>
 </body>
