@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-  "build": "mkdir -p dist && cp -R src/* dist/",
-  "dev": "npm run build && http-server dist -p 5173 --silent",
-  "tauri:dev": "cargo tauri dev"
+    "build": "mkdir -p dist && cp -R src/* dist/",
+    "dev": "npm run build && http-server dist -p 5173 --silent",
+    "tauri:dev": "cargo tauri dev"
   },
   "devDependencies": {
     "http-server": "^14.1.1"

@@ -15,6 +15,15 @@
     .scan-section { margin-bottom: 20px; }
     #scan-log { background: #fff; border: 1px solid #ccc; border-radius: 5px; padding: 10px; margin: 10px auto; max-width: 400px; text-align: left; font-family: monospace; font-size: 12px; display: none; max-height: 200px; overflow-y: auto; }
     #scan-log p { margin: 2px 0; }
+    .tabs { margin: 20px auto; max-width: 800px; }
+    .tab-buttons { display: flex; justify-content: center; }
+    .tab-btn { padding: 10px 20px; background: #ddd; border: none; cursor: pointer; }
+    .tab-btn.active { background: #555; color: white; }
+    .tab-content { display: none; background: #fff; border: 1px solid #ccc; border-radius: 5px; padding: 10px; margin-top: 10px; }
+    .tab-content.active { display: block; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+    th { background: #f0f0f0; }
   </style>
 </head>
 <body>
@@ -27,6 +36,19 @@
     <button id="scan-btn" onclick="scanNetwork()">Scan Network for TVs</button>
     <div id="scan-log"></div>
     <small style="color:#333; display:block; margin-top:6px; max-width:400px; margin-left:auto; margin-right:auto;">Set a Pre-Shared Key on your TV under Network &gt; Home Network Setup &gt; Remote Device Settings, then enter it here. For PIN pairing, leave PSK blank and enter the PIN shown on TV after first command attempt.</small>
+  </div>
+
+  <div class="tabs">
+    <div class="tab-buttons">
+      <button class="tab-btn active" onclick="showTab('mdns', this)">mDNS</button>
+      <button class="tab-btn" onclick="showTab('mdns-raw', this)">mDNS Raw</button>
+      <button class="tab-btn" onclick="showTab('ssdp', this)">SSDP</button>
+      <button class="tab-btn" onclick="showTab('arp', this)">ARP</button>
+    </div>
+    <div id="mdns-tab" class="tab-content active"></div>
+    <div id="mdns-raw-tab" class="tab-content"></div>
+    <div id="ssdp-tab" class="tab-content"></div>
+    <div id="arp-tab" class="tab-content"></div>
   </div>
   <div class="remote">
     <div class="row">
