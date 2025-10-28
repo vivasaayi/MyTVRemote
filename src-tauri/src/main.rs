@@ -3,8 +3,8 @@
     windows_subsystem = "windows"
 )]
 
-use base64::{engine::general_purpose, Engine as _};
 use flume::RecvTimeoutError as FlumeRecvTimeoutError;
+use hex;
 use local_ip_address::local_ip;
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use once_cell::sync::Lazy;
@@ -12,8 +12,9 @@ use rayon::prelude::*;
 use regex::Regex;
 use reqwest::{blocking::Client, StatusCode};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::io::ErrorKind;
+use std::io::{Cursor, ErrorKind};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::process::Command;
 use std::sync::Mutex;
@@ -22,73 +23,293 @@ use std::time::{Duration, Instant};
 
 include!(concat!(env!("OUT_DIR"), "/google.polo.wire.protobuf.rs"));
 
+mod remotemessage {
+    include!(concat!(env!("OUT_DIR"), "/remote.rs"));
+}
+
+use outer_message::Status;
+use prost::Message;
+use rsa::pkcs8::{EncodePrivateKey, LineEnding};
+use rsa::rand_core::OsRng;
+use rsa::RsaPrivateKey;
+use rustls::client::danger::ServerCertVerifier;
+use rustls::pki_types::PrivateKeyDer;
+use rustls_pemfile::{certs as parse_pem_certs, pkcs8_private_keys};
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream as TokioTcpStream;
 use tokio_rustls::{client::TlsStream, rustls, TlsConnector};
-use std::sync::Arc;
-use prost::Message;
-use outer_message::Status;
-use rustls::OwnedTrustAnchor;
+use x509_parser::certificate::X509Certificate;
+use x509_parser::pem::parse_x509_pem;
+use x509_parser::prelude::FromDer;
+use x509_parser::public_key::PublicKey;
+
+#[derive(Debug)]
+struct NoVerifier;
+
+const ANDROID_TV_SERVICE_TYPE: &str = "_androidtvremote2._tcp";
+const ANDROID_TV_SERVICE_TYPE_LOCAL: &str = "_androidtvremote2._tcp.local.";
+const ANDROID_TV_PAIRING_SERVICE_NAME: &str = "androidtvremote2";
+const ANDROID_TV_CLIENT_NAME: &str = "MyTVRemote";
+
+impl ServerCertVerifier for NoVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        vec![
+            rustls::SignatureScheme::RSA_PKCS1_SHA256,
+            rustls::SignatureScheme::RSA_PKCS1_SHA384,
+            rustls::SignatureScheme::RSA_PKCS1_SHA512,
+            rustls::SignatureScheme::RSA_PSS_SHA256,
+            rustls::SignatureScheme::RSA_PSS_SHA384,
+            rustls::SignatureScheme::RSA_PSS_SHA512,
+        ]
+    }
+}
 
 fn generate_cert() -> Result<(String, String), String> {
-    let key_pair = rcgen::KeyPair::generate(&rcgen::PKCS_RSA_SHA256).map_err(|e| e.to_string())?;
-    let mut params = rcgen::CertificateParams::new(vec!["atvremote".to_string()]);
+    let mut rng = OsRng;
+    let private_key = RsaPrivateKey::new(&mut rng, 2048).map_err(|e| e.to_string())?;
+    let key_der = private_key.to_pkcs8_der().map_err(|e| e.to_string())?;
+
+    let key_pair = rcgen::KeyPair::from_der(key_der.as_bytes()).map_err(|e| e.to_string())?;
+    let mut params = rcgen::CertificateParams::new(vec![ANDROID_TV_CLIENT_NAME.to_string()]);
+    params.alg = &rcgen::PKCS_RSA_SHA256;
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params.key_pair = Some(key_pair);
+
     let cert = rcgen::Certificate::from_params(params).map_err(|e| e.to_string())?;
     let cert_pem = cert.serialize_pem().map_err(|e| e.to_string())?;
-    let key_pem = key_pair.serialize_pem();
-    Ok((cert_pem, key_pem))
+    let key_pem = private_key
+        .to_pkcs8_pem(LineEnding::LF)
+        .map_err(|e| e.to_string())?;
+
+    Ok((cert_pem, key_pem.to_string()))
 }
 
 type AndroidTlsStream = TlsStream<TokioTcpStream>;
 
-async fn send_outer_message(stream: &mut AndroidTlsStream, message: &OuterMessage) -> Result<(), String> {
+async fn send_outer_message(
+    stream: &mut AndroidTlsStream,
+    message: &OuterMessage,
+) -> Result<(), String> {
     let mut payload = Vec::new();
     message.encode(&mut payload).map_err(|e| e.to_string())?;
-    let len = (payload.len() as u32).to_be_bytes();
-    stream.write_all(&len).await.map_err(|e| e.to_string())?;
-    stream.write_all(&payload).await.map_err(|e| e.to_string())?;
+    let prefix = encode_varint(payload.len() as u64);
+    stream
+        .write_all(&prefix)
+        .await
+        .map_err(|e| e.to_string())?;
+    stream
+        .write_all(&payload)
+        .await
+        .map_err(|e| e.to_string())?;
+    stream.flush().await.map_err(|e| e.to_string())?;
     Ok(())
 }
 
+async fn send_remote_message(
+    stream: &mut AndroidTlsStream,
+    message: &remotemessage::RemoteMessage,
+) -> Result<usize, String> {
+    let mut payload = Vec::new();
+    message.encode(&mut payload).map_err(|e| e.to_string())?;
+    let prefix = encode_varint(payload.len() as u64);
+    stream
+        .write_all(&prefix)
+        .await
+        .map_err(|e| e.to_string())?;
+    stream
+        .write_all(&payload)
+        .await
+        .map_err(|e| e.to_string())?;
+    stream.flush().await.map_err(|e| e.to_string())?;
+    Ok(payload.len())
+}
+
 async fn read_outer_message(stream: &mut AndroidTlsStream) -> Result<OuterMessage, String> {
-    let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf).await.map_err(|e| e.to_string())?;
-    let frame_len = u32::from_be_bytes(len_buf) as usize;
+    let frame_len = read_varint(stream).await? as usize;
     let mut frame = vec![0u8; frame_len];
-    stream.read_exact(&mut frame).await.map_err(|e| e.to_string())?;
+    stream
+        .read_exact(&mut frame)
+        .await
+        .map_err(|e| e.to_string())?;
     OuterMessage::decode(&frame[..]).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-fn test_connection(ip: String) -> Result<String, String> {
-    let output = Command::new("/sbin/ping")
-        .arg("-c")
-        .arg("4")
-        .arg(&ip)
-        .output()
-        .map_err(|e| {
-            println!("[test_connection] Failed to run ping command: {}", e);
-            format!("Failed to run ping: {}", e)
-        })?;
+async fn try_read_remote_message(stream: &mut AndroidTlsStream) -> Result<Option<remotemessage::RemoteMessage>, String> {
+    match tokio::time::timeout(Duration::from_millis(100), read_varint(stream)).await {
+        Ok(Ok(frame_len)) => {
+            let frame_len = frame_len as usize;
+            let mut frame = vec![0u8; frame_len];
+            stream
+                .read_exact(&mut frame)
+                .await
+                .map_err(|e| e.to_string())?;
+            let msg = remotemessage::RemoteMessage::decode(&frame[..]).map_err(|e| e.to_string())?;
+            Ok(Some(msg))
+        }
+        Ok(Err(e)) => Err(e),
+        Err(_) => Ok(None), // Timeout, no message
+    }
+}
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let status = output.status;
+async fn read_remote_message(stream: &mut AndroidTlsStream) -> Result<remotemessage::RemoteMessage, String> {
+    let frame_len = read_varint(stream).await? as usize;
+    let mut frame = vec![0u8; frame_len];
+    stream
+        .read_exact(&mut frame)
+        .await
+        .map_err(|e| e.to_string())?;
+    remotemessage::RemoteMessage::decode(&frame[..]).map_err(|e| e.to_string())
+}
 
-    println!("[test_connection] Ping status: {}", status);
-    println!("[test_connection] Ping stdout: {}", stdout);
-    println!("[test_connection] Ping stderr: {}", stderr);
+async fn handle_remote_message(
+    msg: &remotemessage::RemoteMessage,
+    stream: &mut AndroidTlsStream,
+) -> Result<bool, String> {
+    const ACTIVE_FEATURES: i32 = 611; // PING | KEY | POWER | VOLUME | APP_LINK
+    println!("[handle_remote_message] Full message: {:?}", msg);
+    let mut response: Option<remotemessage::RemoteMessage> = None;
+    let mut remote_started = false;
 
-    if status.success() {
-        println!("[test_connection] Ping successful");
-        Ok(format!("Connection successful:\n{}", stdout))
+    // Handle based on which field is set (TV might not set message_type correctly)
+    if let Some(set_active) = &msg.remote_set_active {
+        println!("[handle_remote_message] TV wants active features: {}", set_active.active);
+        println!("[handle_remote_message] Advertising active features: {}", ACTIVE_FEATURES);
+        response = Some(remotemessage::RemoteMessage {
+            remote_set_active: Some(remotemessage::RemoteSetActive { active: ACTIVE_FEATURES }),
+            ..Default::default()
+        });
+    } else if let Some(ping) = &msg.remote_ping_request {
+        println!(
+            "[handle_remote_message] Responding to ping with val1={}, val2={}",
+            ping.val1, ping.val2
+        );
+        response = Some(remotemessage::RemoteMessage {
+            remote_ping_response: Some(remotemessage::RemotePingResponse { val1: ping.val1 }),
+            ..Default::default()
+        });
+    } else if let Some(configure) = &msg.remote_configure {
+        println!("[handle_remote_message] Responding to RemoteConfigure from TV");
+        println!("[handle_remote_message] TV features: {}", configure.code1);
+        response = Some(remotemessage::RemoteMessage {
+            remote_configure: Some(remotemessage::RemoteConfigure {
+                code1: ACTIVE_FEATURES,
+                device_info: Some(remotemessage::RemoteDeviceInfo {
+                    model: "".to_string(),
+                    vendor: "".to_string(),
+                    unknown1: 1,
+                    unknown2: "1".to_string(),
+                    package_name: "atvremote".to_string(),
+                    app_version: "1.0.0".to_string(),
+                }),
+            }),
+            ..Default::default()
+        });
+    } else if let Some(start) = &msg.remote_start {
+        println!("[handle_remote_message] Received RemoteStart from TV: started={}", start.started);
+        remote_started = start.started;
     } else {
-        println!("[test_connection] Ping failed");
-        Err(format!(
-            "Connection failed:\nStatus: {}\nStdout: {}\nStderr: {}",
-            status, stdout, stderr
-        ))
+        println!("[handle_remote_message] Unhandled message");
+    }
+
+    if let Some(resp) = response {
+        let bytes = send_remote_message(stream, &resp).await?;
+        println!("[handle_remote_message] Sent response ({} bytes)", bytes);
+    }
+
+    Ok(remote_started)
+}
+
+fn encode_varint(mut value: u64) -> Vec<u8> {
+    let mut buf = Vec::new();
+    loop {
+        let byte = (value & 0x7F) as u8;
+        value >>= 7;
+        if value == 0 {
+            buf.push(byte);
+            break;
+        } else {
+            buf.push(byte | 0x80);
+        }
+    }
+    buf
+}
+
+async fn read_varint(stream: &mut AndroidTlsStream) -> Result<u64, String> {
+    let mut result: u64 = 0;
+    let mut shift = 0;
+    for _ in 0..10 {
+        let mut byte = [0u8; 1];
+        stream
+            .read_exact(&mut byte)
+            .await
+            .map_err(|e| e.to_string())?;
+        let value = (byte[0] & 0x7F) as u64;
+        result |= value << shift;
+        if (byte[0] & 0x80) == 0 {
+            return Ok(result);
+        }
+        shift += 7;
+    }
+    Err("Varint length prefix is too long".to_string())
+}
+
+fn rsa_components_from_pem(pem_str: &str) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let (_, pem) = parse_x509_pem(pem_str.as_bytes()).map_err(|e| e.to_string())?;
+    let cert = pem.parse_x509().map_err(|e| e.to_string())?;
+    rsa_components_from_cert(&cert)
+}
+
+fn rsa_components_from_der(der: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let (_, cert) = X509Certificate::from_der(der).map_err(|e| e.to_string())?;
+    rsa_components_from_cert(&cert)
+}
+
+fn strip_leading_zeros(bytes: &[u8]) -> Vec<u8> {
+    bytes.iter()
+        .skip_while(|&&b| b == 0)
+        .copied()
+        .collect()
+}
+
+fn rsa_components_from_cert<'a>(cert: &X509Certificate<'a>) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let parsed = cert.public_key().parsed().map_err(|e| e.to_string())?;
+
+    if let PublicKey::RSA(rsa_key) = parsed {
+        let modulus = strip_leading_zeros(rsa_key.modulus);
+        let exponent = strip_leading_zeros(rsa_key.exponent);
+        Ok((modulus, exponent))
+    } else {
+        Err("Certificate public key is not RSA".to_string())
     }
 }
 
@@ -96,70 +317,95 @@ fn test_connection(ip: String) -> Result<String, String> {
 async fn start_pairing(ip: String) -> Result<PairingStartResult, String> {
     let trimmed_ip = ip.trim();
     if trimmed_ip.is_empty() {
-        return Err("TV IP address is required before starting pairing.".to_string());
+        return Err("TV IP address is required to start pairing.".to_string());
     }
 
     let ip = trimmed_ip.to_string();
-    println!("[start_pairing] Initiating Android TV pairing request for {}", ip);
+    println!("[start_pairing] Initiating pairing handshake with {}", ip);
 
-    // Generate cert if not exists
-    let cert_path = "cert.pem";
-    let key_path = "key.pem";
-    let (cert_pem, key_pem) = if std::path::Path::new(cert_path).exists() && std::path::Path::new(key_path).exists() {
-        (std::fs::read_to_string(cert_path).map_err(|e| e.to_string())?, std::fs::read_to_string(key_path).map_err(|e| e.to_string())?)
-    } else {
-        let (c, k) = generate_cert()?;
-        std::fs::write(cert_path, &c).map_err(|e| e.to_string())?;
-        std::fs::write(key_path, &k).map_err(|e| e.to_string())?;
-        (c, k)
-    };
+    let (cert_pem, key_pem) = generate_cert()?;
 
-    // Load cert and key
-    let certs_pem = pem::parse_many(&cert_pem).map_err(|e| e.to_string())?;
-    let certs = certs_pem
+    let mut cert_cursor = Cursor::new(cert_pem.as_bytes());
+    let certs = parse_pem_certs(&mut cert_cursor)
+        .map_err(|_| "Failed to parse generated client certificate.".to_string())?
         .into_iter()
-        .map(|p| rustls::Certificate(p.contents().to_vec()))
+        .map(rustls::pki_types::CertificateDer::from)
         .collect::<Vec<_>>();
-    let key_pem_parsed = pem::parse(&key_pem).map_err(|e| e.to_string())?;
-    let key = rustls::PrivateKey(key_pem_parsed.contents().to_vec());
 
-    let mut root_store = rustls::RootCertStore::empty();
-    root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-        OwnedTrustAnchor::from_subject_spki_name_constraints(ta.subject, ta.spki, ta.name_constraints)
-    }));
+    let mut key_cursor = Cursor::new(key_pem.as_bytes());
+    let mut keys = pkcs8_private_keys(&mut key_cursor)
+        .map_err(|_| "Failed to parse generated client key.".to_string())?;
+    let key_bytes = keys
+        .pop()
+        .ok_or_else(|| "Generated key missing PKCS#8 data.".to_string())?;
+    let key = PrivateKeyDer::Pkcs8(key_bytes.into());
 
-    let config = rustls::ClientConfig::builder()
-        .with_safe_defaults()
-        .with_root_certificates(root_store)
+    let mut config = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(NoVerifier))
         .with_client_auth_cert(certs, key)
         .map_err(|e| e.to_string())?;
+    config.alpn_protocols.push(b"remote_pairing".to_vec());
     let connector = TlsConnector::from(Arc::new(config));
 
     // Connect
-    let stream = TokioTcpStream::connect(format!("{}:6467", ip)).await.map_err(|e| e.to_string())?;
-    let domain = rustls::ServerName::try_from(ip.as_str()).map_err(|e| e.to_string())?;
-    let mut tls_stream = connector.connect(domain, stream).await.map_err(|e| e.to_string())?;
+    let stream = TokioTcpStream::connect(format!("{}:6467", ip))
+        .await
+        .map_err(|e| e.to_string())?;
+    let ip_addr: std::net::IpAddr = ip.parse().map_err(|_| "Invalid IP address".to_string())?;
+    let domain = rustls::pki_types::ServerName::IpAddress(ip_addr.into());
+    let mut tls_stream = connector
+        .connect(domain, stream)
+        .await
+        .map_err(|e| e.to_string())?;
+    println!("[start_pairing] TLS session established with {}", ip);
 
     // Begin pairing handshake following Android TV protocol.
+    println!(
+        "[start_pairing] Sending PairingRequest (service={}, client={})",
+        ANDROID_TV_PAIRING_SERVICE_NAME, ANDROID_TV_CLIENT_NAME
+    );
     let request = OuterMessage {
         protocol_version: 2,
         status: Status::Ok as i32,
         pairing_request: Some(PairingRequest {
-            service_name: "atvremote".to_string(),
-            client_name: "MyTVRemote".to_string(),
+            service_name: ANDROID_TV_PAIRING_SERVICE_NAME.to_string(),
+            client_name: ANDROID_TV_CLIENT_NAME.to_string(),
         }),
         ..Default::default()
     };
     send_outer_message(&mut tls_stream, &request).await?;
 
     loop {
-        let incoming = read_outer_message(&mut tls_stream).await?;
+        let incoming = match tokio::time::timeout(
+            Duration::from_secs(10),
+            read_outer_message(&mut tls_stream),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(
+                    "Timed out waiting for pairing response from Android TV.".to_string(),
+                )
+            }
+        };
+        println!("[start_pairing] Incoming message: {:?}", incoming);
+        println!(
+            "[start_pairing] Received message: status={}, has_ack={}, has_options={}, has_config_ack={}, has_secret_ack={}",
+            incoming.status,
+            incoming.pairing_request_ack.is_some(),
+            incoming.options.is_some(),
+            incoming.configuration_ack.is_some(),
+            incoming.secret_ack.is_some()
+        );
         if incoming.status != Status::Ok as i32 {
             return Err(format!("Pairing failed with status {}", incoming.status));
         }
 
         if incoming.pairing_request_ack.is_some() {
             println!("[start_pairing] Received PairingRequestAck from {}", ip);
+            println!("[start_pairing] Sending Options to {}", ip);
             let options_msg = OuterMessage {
                 protocol_version: 2,
                 status: Status::Ok as i32,
@@ -176,6 +422,7 @@ async fn start_pairing(ip: String) -> Result<PairingStartResult, String> {
             send_outer_message(&mut tls_stream, &options_msg).await?;
         } else if incoming.options.is_some() {
             println!("[start_pairing] Received Options from {}", ip);
+            println!("[start_pairing] Sending Configuration to {}", ip);
             let configuration_msg = OuterMessage {
                 protocol_version: 2,
                 status: Status::Ok as i32,
@@ -203,6 +450,14 @@ async fn start_pairing(ip: String) -> Result<PairingStartResult, String> {
         }
     }
 
+    let server_cert_der = tls_stream
+        .get_ref()
+        .1
+        .peer_certificates()
+        .and_then(|chain| chain.first().cloned())
+        .map(|cert| cert.as_ref().to_vec())
+        .ok_or_else(|| "Unable to retrieve server certificate from Android TV.".to_string())?;
+
     {
         let mut sessions = PAIRING_SESSIONS.lock().unwrap();
         sessions.insert(
@@ -210,6 +465,12 @@ async fn start_pairing(ip: String) -> Result<PairingStartResult, String> {
             PairingSession {
                 client_id: "androidtv".to_string(),
                 user_id: None,
+                tls_stream: Some(tls_stream),
+                client_cert_pem: cert_pem,
+                client_key_pem: key_pem,
+                server_cert_der,
+                remote_started: false,
+                remote_stream: None,  // Will be initialized when first key is sent
             },
         );
     }
@@ -223,7 +484,7 @@ async fn start_pairing(ip: String) -> Result<PairingStartResult, String> {
 }
 
 #[tauri::command]
-fn complete_pairing(ip: String, pin: String) -> Result<PairingCompleteResult, String> {
+async fn complete_pairing(ip: String, pin: String) -> Result<PairingCompleteResult, String> {
     let trimmed_ip = ip.trim();
     if trimmed_ip.is_empty() {
         return Err("TV IP address is required to complete pairing.".to_string());
@@ -235,151 +496,317 @@ fn complete_pairing(ip: String, pin: String) -> Result<PairingCompleteResult, St
     }
 
     let ip = trimmed_ip.to_string();
-    let pin = trimmed_pin.to_string();
+    let pin_code = trimmed_pin.to_ascii_uppercase();
     println!(
         "[complete_pairing] Completing pairing for {} with provided PIN",
         ip
     );
 
-    let session = {
-        let sessions = PAIRING_SESSIONS.lock().unwrap();
-        sessions.get(&ip).cloned()
+    if pin_code.len() != 6 || !pin_code.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("PIN must be a 6-digit hexadecimal value.".to_string());
     }
-    .ok_or_else(|| "Start pairing before attempting to complete it.".to_string())?;
 
-    let payload = serde_json::json!({
-        "id": 13,
-        "method": "actRegister",
-        "params": [
-            {
-                "clientid": session.client_id.clone(),
-                "nickname": "MyTVRemote (Tauri)",
-                "level": "private"
-            },
-            [
-                {
-                    "function": "WOL",
-                    "value": "yes"
-                }
-            ]
-        ],
-        "version": "1.0"
-    });
+    let (mut session, mut tls_stream) = {
+        let mut sessions = PAIRING_SESSIONS.lock().unwrap();
+        let mut session = sessions
+            .remove(&ip)
+            .ok_or_else(|| "Start pairing before attempting to complete it.".to_string())?;
+        let stream = session.tls_stream.take().ok_or_else(|| {
+            "Pairing session is no longer active. Start pairing again.".to_string()
+        })?;
+        (session, stream)
+    };
 
-    let auth = format!("{}:{}", session.client_id, pin);
-    let encoded_auth = general_purpose::STANDARD.encode(auth);
+    let client_id = session.client_id.clone();
 
-    let client = build_client(5).map_err(|e| {
-        println!("[complete_pairing] Failed to build HTTP client: {}", e);
-        format!("Failed to build HTTP client: {}", e)
-    })?;
+    let (client_modulus, client_exponent) = rsa_components_from_pem(&session.client_cert_pem)?;
+    let (server_modulus, server_exponent) = rsa_components_from_der(&session.server_cert_der)?;
 
-    let endpoints = [
-        ("HTTPS", format!("https://{}/sony/accessControl", ip)),
-        ("HTTP", format!("http://{}/sony/accessControl", ip)),
-    ];
+    println!("[complete_pairing] Client Modulus: {} bytes", client_modulus.len());
+    println!("[complete_pairing] Client Exponent: {} bytes", client_exponent.len());
+    println!("[complete_pairing] Server Modulus: {} bytes", server_modulus.len());
+    println!("[complete_pairing] Server Exponent: {} bytes", server_exponent.len());
 
-    for (label, url) in endpoints {
-        println!(
-            "[complete_pairing] Sending authenticated actRegister over {} -> {}",
-            label, url
+    let prefix_value = u8::from_str_radix(&pin_code[..2], 16)
+        .map_err(|_| "Failed to parse PIN checksum.".to_string())?;
+    let suffix_bytes = hex::decode(&pin_code[2..])
+        .map_err(|_| "PIN must be a valid hexadecimal string.".to_string())?;
+
+    println!("[complete_pairing] PIN Suffix: {:x?}", suffix_bytes);
+
+    let mut hasher = Sha256::new();
+    hasher.update(&client_modulus);
+    hasher.update(&client_exponent);
+    hasher.update(&server_modulus);
+    hasher.update(&server_exponent);
+    hasher.update(&suffix_bytes);
+    let secret = hasher.finalize();
+
+    println!("[complete_pairing] Computed Secret: {:x?}", secret);
+    println!("[complete_pairing] PIN Prefix: {:x}", prefix_value);
+
+    if secret[0] != prefix_value {
+        return Err(
+            "PIN verification failed. Make sure you entered the code shown on the TV.".to_string(),
         );
+    }
 
-        match client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Basic {}", encoded_auth))
-            .json(&payload)
-            .send()
+    let secret_msg = OuterMessage {
+        protocol_version: 2,
+        status: Status::Ok as i32,
+        secret: Some(Secret {
+            secret: secret.to_vec(),
+        }),
+        ..Default::default()
+    };
+    println!("[complete_pairing] Sending Secret message to {}", ip);
+    send_outer_message(&mut tls_stream, &secret_msg).await?;
+
+    loop {
+        let response = match tokio::time::timeout(
+            Duration::from_secs(10),
+            read_outer_message(&mut tls_stream),
+        )
+        .await
         {
-            Ok(response) => {
-                let status = response.status();
-                println!("[complete_pairing] {} responded with HTTP {}", url, status);
-
-                if status.is_success() {
-                    let body = response.text().unwrap_or_default();
-                    println!("[complete_pairing] Pairing success response body: {}", body);
-
-                    let user_id = extract_user_id(&body);
-
-                    if let Some(ref user_id_value) = user_id {
-                        println!(
-                            "[complete_pairing] Extracted userId {} for client {}",
-                            user_id_value, session.client_id
-                        );
-                    } else {
-                        println!("[complete_pairing] No userId found in response body");
-                    }
-
-                    {
-                        let mut sessions = PAIRING_SESSIONS.lock().unwrap();
-                        if let Some(existing) = sessions.get_mut(&ip) {
-                            existing.user_id = user_id.clone();
-                        }
-                    }
-
-                    let message = if let Some(ref user_id_value) = user_id {
-                        format!(
-                            "Pairing complete. Future requests can use Basic auth with client ID '{}' and user ID '{}'.",
-                            session.client_id, user_id_value
-                        )
-                    } else {
-                        format!(
-                            "Pairing complete via {}. Client ID '{}' is now registered.",
-                            label, session.client_id
-                        )
-                    };
-
-                    return Ok(PairingCompleteResult {
-                        client_id: session.client_id.clone(),
-                        user_id,
-                        transport: label.to_string(),
-                        status: "success".to_string(),
-                        message,
-                    });
-                } else if status == StatusCode::UNAUTHORIZED {
-                    println!(
-                        "[complete_pairing] PIN rejected over {} (HTTP 401). The code may be incorrect or expired.",
-                        label
-                    );
-                    return Err("PIN was rejected. Start pairing again and enter the new PIN within 60 seconds.".to_string());
-                } else {
-                    println!(
-                        "[complete_pairing] Unexpected HTTP {} from {}. Trying next transport if available.",
-                        status, url
-                    );
-                    continue;
-                }
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(
+                    "Timed out waiting for final pairing confirmation from Android TV.".to_string(),
+                )
             }
-            Err(err) => {
-                println!("[complete_pairing] Request over {} failed: {}", url, err);
-                continue;
-            }
+        };
+        println!(
+            "[complete_pairing] Received message: status={}, has_secret_ack={}",
+            response.status,
+            response.secret_ack.is_some()
+        );
+        if response.status != Status::Ok as i32 {
+            let status = Status::try_from(response.status).unwrap_or(Status::Error);
+            return Err(match status {
+                Status::BadSecret => "PIN verification failed on TV. Re-enter the displayed code.".to_string(),
+                Status::BadConfiguration => "TV rejected configuration; restart pairing on the TV and try again.".to_string(),
+                Status::Error => "TV reported an unspecified error while completing pairing.".to_string(),
+                _ => format!("Pairing secret rejected with status {}", response.status),
+            });
+        }
+
+        if response.secret_ack.is_some() {
+            println!("[complete_pairing] Secret acknowledged by {}", ip);
+            break;
         }
     }
 
-    Err("Unable to complete pairing with the provided PIN. Ensure the TV is still showing the pairing prompt.".to_string())
+    session.tls_stream = Some(tls_stream);
+    {
+        let mut sessions = PAIRING_SESSIONS.lock().unwrap();
+        sessions.insert(ip.clone(), session);
+    }
+
+    Ok(PairingCompleteResult {
+        client_id,
+        user_id: None,
+        transport: "SSL".to_string(),
+        status: "paired".to_string(),
+        message: "Pairing complete. Secure channel established with Android TV.".to_string(),
+    })
 }
 
-fn extract_user_id(body: &str) -> Option<String> {
-    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
-    let result = value.get("result")?.as_array()?;
+#[tauri::command]
+async fn send_remote_key(ip: String, key_code: String) -> Result<String, String> {
+    let trimmed_ip = ip.trim();
+    if trimmed_ip.is_empty() {
+        return Err("TV IP address is required to send remote key.".to_string());
+    }
 
-    for entry in result {
-        if let Some(user_id) = entry.get("userId").and_then(|v| v.as_str()) {
-            return Some(user_id.to_string());
-        }
+    let ip = trimmed_ip.to_string();
+    println!("[send_remote_key] Sending {} to {}", key_code, ip);
 
-        if let Some(inner_array) = entry.as_array() {
-            for inner in inner_array {
-                if let Some(user_id) = inner.get("userId").and_then(|v| v.as_str()) {
-                    return Some(user_id.to_string());
-                }
-            }
+    // Get certificates from pairing session
+    let (client_cert_pem, client_key_pem, mut remote_started, existing_stream) = {
+        let mut sessions = PAIRING_SESSIONS.lock().unwrap();
+        let session = sessions
+            .get_mut(&ip)
+            .ok_or_else(|| "No active pairing session. Complete pairing first.".to_string())?;
+        (
+            session.client_cert_pem.clone(),
+            session.client_key_pem.clone(),
+            session.remote_started,
+            session.remote_stream.take(),  // Use remote_stream instead of tls_stream
+        )
+    };
+
+    // Create or use existing remote control TLS connection on port 6466
+    let mut tls_stream = if let Some(stream) = existing_stream {
+        stream
+    } else {
+        // Create new connection on port 6466 for remote control
+        println!("[send_remote_key] Creating new remote control connection to {}:6466", ip);
+        
+        let stream = TokioTcpStream::connect(format!("{}:6466", ip))
+            .await
+            .map_err(|e| format!("Failed to connect to TV on port 6466: {}", e))?;
+
+        let mut client_config = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoVerifier))
+            .with_client_auth_cert(
+                vec![rustls::pki_types::CertificateDer::from(
+                    parse_pem_certs(&mut Cursor::new(client_cert_pem.as_bytes()))
+                        .map_err(|e| format!("Failed to parse client cert: {}", e))?
+                        .into_iter()
+                        .next()
+                        .ok_or("No certificate found in PEM")?
+                )],
+                PrivateKeyDer::Pkcs8(
+                    pkcs8_private_keys(&mut Cursor::new(client_key_pem.as_bytes()))
+                        .map_err(|e| format!("Failed to parse private keys: {}", e))?
+                        .into_iter()
+                        .next()
+                        .ok_or("No private key found")?
+                        .into()
+                ),
+            )
+            .map_err(|e| format!("Failed to configure client auth: {}", e))?;
+        
+        client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        let connector = TlsConnector::from(Arc::new(client_config));
+        let domain = rustls::pki_types::ServerName::try_from("Google")
+            .map_err(|e| format!("Invalid server name: {}", e))?
+            .to_owned();
+
+        connector
+            .connect(domain, stream)
+            .await
+            .map_err(|e| format!("TLS handshake failed on port 6466: {}", e))?
+    };
+
+    // Handle any pending messages already in the socket buffer
+    while let Ok(Some(msg)) = try_read_remote_message(&mut tls_stream).await {
+        println!("[send_remote_key] Handling pending message from TV: {:?}", msg);
+        if handle_remote_message(&msg, &mut tls_stream).await? {
+            println!("[send_remote_key] TV already marked remote session as started");
+            remote_started = true;
         }
     }
 
-    None
+    if !remote_started {
+        println!(
+            "[send_remote_key] Waiting for TV to complete remote handshake (RemoteConfigure/RemoteStart)"
+        );
+
+        for attempt in 0..5 {
+            if remote_started {
+                break;
+            }
+
+            match tokio::time::timeout(Duration::from_millis(1200), read_remote_message(&mut tls_stream)).await {
+                Ok(Ok(tv_msg)) => {
+                    println!("[send_remote_key] Received handshake message from TV: {:?}", tv_msg);
+                    if handle_remote_message(&tv_msg, &mut tls_stream).await? {
+                        println!("[send_remote_key] TV signaled RemoteStart; ready to send keys");
+                        remote_started = true;
+                        break;
+                    }
+                }
+                Ok(Err(e)) => {
+                    println!("[send_remote_key] Error reading TV handshake message: {}", e);
+                    break;
+                }
+                Err(_) => {
+                    println!("[send_remote_key] Handshake wait attempt {} timed out", attempt + 1);
+                }
+            }
+        }
+
+        if !remote_started {
+            println!("[send_remote_key] Warning: TV has not sent RemoteStart; key may not have effect yet");
+        }
+    }
+
+    let key_code_value = match key_code.as_str() {
+        "KEYCODE_DPAD_UP" => remotemessage::remote_key_inject::KeyCode::KeycodeDpadUp as i32,
+        "KEYCODE_DPAD_DOWN" => remotemessage::remote_key_inject::KeyCode::KeycodeDpadDown as i32,
+        "KEYCODE_DPAD_LEFT" => remotemessage::remote_key_inject::KeyCode::KeycodeDpadLeft as i32,
+        "KEYCODE_DPAD_RIGHT" => remotemessage::remote_key_inject::KeyCode::KeycodeDpadRight as i32,
+        "KEYCODE_DPAD_CENTER" => remotemessage::remote_key_inject::KeyCode::KeycodeDpadCenter as i32,
+        "KEYCODE_VOLUME_UP" => remotemessage::remote_key_inject::KeyCode::KeycodeVolumeUp as i32,
+        "KEYCODE_VOLUME_DOWN" => remotemessage::remote_key_inject::KeyCode::KeycodeVolumeDown as i32,
+        "KEYCODE_POWER" => remotemessage::remote_key_inject::KeyCode::KeycodePower as i32,
+        "KEYCODE_BACK" => remotemessage::remote_key_inject::KeyCode::KeycodeBack as i32,
+        "KEYCODE_HOME" => remotemessage::remote_key_inject::KeyCode::KeycodeHome as i32,
+        "KEYCODE_MENU" => remotemessage::remote_key_inject::KeyCode::KeycodeMenu as i32,
+        "KEYCODE_VOLUME_MUTE" => remotemessage::remote_key_inject::KeyCode::KeycodeVolumeMute as i32,
+        _ => return Err(format!("Unknown key code: {}", key_code)),
+    };
+
+    let key_inject = remotemessage::RemoteKeyInject {
+        key_code: key_code_value,
+        direction: remotemessage::remote_key_inject::Direction::Short as i32,
+    };
+
+    let remote_msg = remotemessage::RemoteMessage {
+        remote_key_inject: Some(key_inject),
+        ..Default::default()
+    };
+
+    let payload_len = send_remote_message(&mut tls_stream, &remote_msg).await?;
+    println!(
+        "[send_remote_key] Sent key {} ({} bytes, started={})",
+        key_code, payload_len, remote_started
+    );
+
+    // Try to read any immediate responses
+    while let Ok(Some(msg)) = try_read_remote_message(&mut tls_stream).await {
+        println!("[send_remote_key] Received response message from TV: {:?}", msg);
+        if handle_remote_message(&msg, &mut tls_stream).await? {
+            remote_started = true;
+        }
+    }
+
+    {
+        let mut sessions = PAIRING_SESSIONS.lock().unwrap();
+        if let Some(session) = sessions.get_mut(&ip) {
+            session.remote_started = remote_started;
+            session.remote_stream = Some(tls_stream);  // Store in remote_stream
+        }
+    }
+
+    Ok(format!("Sent {} to {}", key_code, ip))
+}
+
+#[tauri::command]
+fn test_connection(ip: String) -> Result<String, String> {
+    let trimmed_ip = ip.trim();
+    if trimmed_ip.is_empty() {
+        return Err("Enter the TV IP address first.".to_string());
+    }
+
+    println!(
+        "[test_connection] Testing Sony TV connectivity for {}",
+        trimmed_ip
+    );
+
+    let psk: Option<String> = None;
+    let pin: Option<String> = None;
+
+    match test_tv_connection(trimmed_ip, &psk, &pin) {
+        TestOutcome::Reachable { transport } => Ok(format!(
+            "Sony TV at {} responded via {}.",
+            trimmed_ip,
+            transport.label()
+        )),
+        TestOutcome::AuthRequired { status, transport } => Err(format!(
+            "Sony TV at {} requires authentication (HTTP {} via {}). Provide PSK or PIN and try again.",
+            trimmed_ip,
+            status,
+            transport.label()
+        )),
+        TestOutcome::NoResponse => Err(format!(
+            "No response from {}. Verify the IP address, network connectivity, and that the TV is powered on.",
+            trimmed_ip
+        )),
+    }
 }
 
 #[tauri::command]
@@ -678,10 +1105,15 @@ static DEFAULT_PORT_SCAN_PORTS: &[u16] = &[
     9000, // UPnP/DLNA services
 ];
 
-#[derive(Clone, Debug)]
 struct PairingSession {
     client_id: String,
     user_id: Option<String>,
+    tls_stream: Option<AndroidTlsStream>,
+    client_cert_pem: String,
+    client_key_pem: String,
+    server_cert_der: Vec<u8>,
+    remote_started: bool,
+    remote_stream: Option<AndroidTlsStream>,  // Persistent connection for remote control
 }
 
 static PAIRING_SESSIONS: Lazy<Mutex<HashMap<String, PairingSession>>> =
@@ -1052,7 +1484,7 @@ fn discover_tvs_via_mdns(logs: &mut Vec<String>) -> (Vec<Device>, Vec<MdnsRecord
         "_airplay._tcp.local.",
         "_googlecast._tcp.local.",
         "_raop._tcp.local.",
-        "_androidtvremote2._tcp.local.",
+    ANDROID_TV_SERVICE_TYPE_LOCAL,
         "_companion-link._tcp.local.",
         "_mediaremotetv._tcp.local.",
         "_homekit._tcp.local.",
@@ -1130,7 +1562,7 @@ fn discover_tvs_via_mdns(logs: &mut Vec<String>) -> (Vec<Device>, Vec<MdnsRecord
     if devices.is_empty() {
         logs.push("No devices found via mDNS; trying dns-sd fallback".to_string());
         println!("[scan_network] No mDNS devices; trying dns-sd fallback");
-        for service_type in ["_androidtvremote2._tcp"].iter() {
+    for service_type in [ANDROID_TV_SERVICE_TYPE].iter() {
             match discover_via_dns_sd(
                 service_type,
                 &mut devices,
@@ -1791,7 +2223,8 @@ fn main() {
             cast_launch_app,
             test_connection,
             start_pairing,
-            complete_pairing
+            complete_pairing,
+            send_remote_key
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

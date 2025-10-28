@@ -1,0 +1,71 @@
+syntax = "proto3";
+
+package remote;
+
+message RemoteMessage {
+  RemoteConfigure remote_configure = 1;
+  RemoteSetActive remote_set_active = 2;
+  RemotePingRequest remote_ping_request = 8;
+  RemotePingResponse remote_ping_response = 9;
+  RemoteKeyInject remote_key_inject = 10;
+  RemoteStart remote_start = 40;
+}
+
+message RemoteKeyInject {
+  enum KeyCode {
+    KEYCODE_UNKNOWN = 0;
+    KEYCODE_DPAD_UP = 19;
+    KEYCODE_DPAD_DOWN = 20;
+    KEYCODE_DPAD_LEFT = 21;
+    KEYCODE_DPAD_RIGHT = 22;
+    KEYCODE_DPAD_CENTER = 23;
+    KEYCODE_VOLUME_UP = 24;
+    KEYCODE_VOLUME_DOWN = 25;
+    KEYCODE_POWER = 26;
+    KEYCODE_BACK = 4;
+    KEYCODE_HOME = 3;
+    KEYCODE_MENU = 82;
+    KEYCODE_VOLUME_MUTE = 164;
+  }
+
+  enum Direction {
+    UNKNOWN_DIRECTION = 0;
+    START_LONG = 1;
+    END_LONG = 2;
+    SHORT = 3;
+  }
+
+  KeyCode key_code = 1;
+  Direction direction = 2;
+}
+
+message RemoteSetActive {
+  int32 active = 1;
+}
+
+message RemoteStart {
+  bool started = 1;
+}
+
+message RemotePingRequest {
+  int32 val1 = 1;
+  int32 val2 = 2;
+}
+
+message RemotePingResponse {
+  int32 val1 = 1;
+}
+
+message RemoteDeviceInfo {
+  string model = 1;
+  string vendor = 2;
+  int32 unknown1 = 3;
+  string unknown2 = 4;
+  string package_name = 5;
+  string app_version = 6;
+}
+
+message RemoteConfigure {
+  int32 code1 = 1;
+  RemoteDeviceInfo device_info = 2;
+}

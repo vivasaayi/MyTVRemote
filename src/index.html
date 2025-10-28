@@ -51,35 +51,34 @@
     <div id="ssdp-tab" class="tab-content"></div>
     <div id="arp-tab" class="tab-content"></div>
   </div>
-  <div class="remote" style="background: #ff9800;">
-    <h3 style="margin-top: 0; color: white;">Android TV Remote Control (Unavailable)</h3>
-    <p style="color: white; margin: 10px 0;">⚠️ Remote control functionality is currently unavailable. The required Android TV Remote library could not be loaded.</p>
-    <p style="color: white; margin: 10px 0; font-size: 14px;">Use IRCC commands with PSK or PIN authentication instead. Buttons remain disabled to avoid confusion.</p>
+  <div class="remote" style="background: #0288d1;">
+    <h3 style="margin-top: 0; color: white;">Android TV Remote Control</h3>
+    <p style="color: white; margin: 10px 0; font-size: 14px;">Pair with TV first, then use remote buttons below</p>
     <div class="row">
-      <button onclick="sendRemoteKey('power')" disabled style="opacity: 0.4;">Power</button>
+      <button onclick="sendRemoteKey('KEYCODE_POWER')">Power</button>
     </div>
     <div class="row">
-      <button onclick="sendRemoteKey('volume_up')" disabled style="opacity: 0.4;">Vol +</button>
-      <button onclick="sendRemoteKey('volume_down')" disabled style="opacity: 0.4;">Vol -</button>
+      <button onclick="sendRemoteKey('KEYCODE_VOLUME_UP')">Vol +</button>
+      <button onclick="sendRemoteKey('KEYCODE_VOLUME_DOWN')">Vol -</button>
     </div>
     <div class="row">
-      <button onclick="sendRemoteKey('up')" disabled style="opacity: 0.4;">Up</button>
+      <button onclick="sendRemoteKey('KEYCODE_DPAD_UP')">Up</button>
     </div>
     <div class="row">
-      <button onclick="sendRemoteKey('left')" disabled style="opacity: 0.4;">Left</button>
-      <button onclick="sendRemoteKey('enter')" disabled style="opacity: 0.4;">Enter</button>
-      <button onclick="sendRemoteKey('right')" disabled style="opacity: 0.4;">Right</button>
+      <button onclick="sendRemoteKey('KEYCODE_DPAD_LEFT')">Left</button>
+      <button onclick="sendRemoteKey('KEYCODE_DPAD_CENTER')">Enter</button>
+      <button onclick="sendRemoteKey('KEYCODE_DPAD_RIGHT')">Right</button>
     </div>
     <div class="row">
-      <button onclick="sendRemoteKey('down')" disabled style="opacity: 0.4;">Down</button>
+      <button onclick="sendRemoteKey('KEYCODE_DPAD_DOWN')">Down</button>
     </div>
     <div class="row">
-      <button onclick="sendRemoteKey('back')" disabled style="opacity: 0.4;">Back</button>
-      <button onclick="sendRemoteKey('home')" disabled style="opacity: 0.4;">Home</button>
+      <button onclick="sendRemoteKey('KEYCODE_BACK')">Back</button>
+      <button onclick="sendRemoteKey('KEYCODE_HOME')">Home</button>
     </div>
     <div class="row">
-      <button onclick="sendRemoteKey('menu')" disabled style="opacity: 0.4;">Menu</button>
-      <button onclick="sendRemoteKey('mute')" disabled style="opacity: 0.4;">Mute</button>
+      <button onclick="sendRemoteKey('KEYCODE_MENU')">Menu</button>
+      <button onclick="sendRemoteKey('KEYCODE_VOLUME_MUTE')">Mute</button>
     </div>
   </div>
   <div class="remote" style="margin-top: 20px; background: #4caf50;">

@@ -394,8 +394,20 @@ function setupHandlers() {
     }
   }
 
-  async function sendRemoteKey(key) {
-    alert('Remote control functionality is not currently available. The required Android TV Remote library could not be loaded. Please use IRCC commands with PSK/PIN authentication instead.');
+  async function sendRemoteKey(keyCode) {
+    const ip = document.getElementById('tv-ip').value.trim();
+    if (!ip) {
+      alert('Please enter the TV IP address first.');
+      return;
+    }
+
+    try {
+      const result = await window.__TAURI__.core.invoke('send_remote_key', { ip, keyCode });
+      console.log(`[sendRemoteKey] Sent ${keyCode} to ${ip}:`, result);
+    } catch (err) {
+      console.error(`[sendRemoteKey] Error sending ${keyCode}:`, err);
+      alert(`Error sending remote key: ${err}`);
+    }
   }
 
   window.send = send;
