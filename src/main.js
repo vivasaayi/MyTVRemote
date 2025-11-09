@@ -1,19 +1,9 @@
 console.log('main.js loaded');
 
 function setupHandlers() {
-  const tauri = window.__TAURI__;
-  let invokeFn;
-  if (tauri && tauri.core && typeof tauri.core.invoke === 'function') {
-    invokeFn = tauri.core.invoke;
-  } else if (tauri && typeof tauri.invoke === 'function') {
-    invokeFn = tauri.invoke;
-  }
-
-  if (typeof invokeFn !== 'function') {
-    console.error('Tauri invoke API not available yet. Retrying...');
-    setTimeout(setupHandlers, 100);
-    return;
-  }
+  console.log('setupHandlers called');
+  const invokeFn = window.__TAURI__.core.invoke;
+  console.log('invokeFn:', typeof invokeFn);
 
   const ipInput = document.getElementById('tv-ip');
   const pskInput = document.getElementById('tv-psk');
@@ -402,13 +392,102 @@ function setupHandlers() {
     }
 
     try {
-      const result = await window.__TAURI__.core.invoke('send_remote_key', { ip, keyCode });
+      const result = await invokeFn('send_remote_key', { ip, keyCode });
       console.log(`[sendRemoteKey] Sent ${keyCode} to ${ip}:`, result);
     } catch (err) {
       console.error(`[sendRemoteKey] Error sending ${keyCode}:`, err);
       alert(`Error sending remote key: ${err}`);
     }
   }
+
+  // Function to send text input by converting characters to key codes
+  async function sendText() {
+    const textInput = document.getElementById('text-input');
+    const text = textInput.value.trim();
+    if (!text) {
+      alert('Please enter some text to send.');
+      return;
+    }
+
+    const ip = document.getElementById('tv-ip').value.trim();
+    if (!ip) {
+      alert('Please enter the TV IP address first.');
+      return;
+    }
+
+    // Clear the input field
+    textInput.value = '';
+
+    // Convert text to key codes and send sequentially
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i].toUpperCase();
+      let keyCode = null;
+
+      if (char >= 'A' && char <= 'Z') {
+        keyCode = `KEYCODE_${char}`;
+      } else if (char >= '0' && char <= '9') {
+        keyCode = `KEYCODE_${char}`;
+      } else if (char === ' ') {
+        keyCode = 'KEYCODE_SPACE';
+      } else if (char === '.') {
+        keyCode = 'KEYCODE_PERIOD';
+      } else if (char === ',') {
+        keyCode = 'KEYCODE_COMMA';
+      } else if (char === '-') {
+        keyCode = 'KEYCODE_MINUS';
+      } else if (char === '_') {
+        keyCode = 'KEYCODE_UNDERSCORE';
+      } else {
+        console.warn(`Unsupported character: ${char}`);
+        continue;
+      }
+
+      try {
+        const result = await invokeFn('send_remote_key', { ip, keyCode });
+        console.log(`[sendText] Sent ${keyCode} (${char}) to ${ip}:`, result);
+        
+        // Add a small delay between characters to avoid overwhelming the TV
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } catch (err) {
+        console.error(`[sendText] Error sending ${keyCode}:`, err);
+        alert(`Error sending text: ${err}`);
+        return;
+      }
+    }
+
+    console.log(`[sendText] Finished sending text: "${text}"`);
+  }
+
+  // Add keyboard event listener for remote control keys
+  document.addEventListener('keydown', (event) => {
+    // Only handle keys if no input field is focused
+    if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') {
+      return;
+    }
+
+    switch (event.key) {
+      case 'ArrowUp':
+        event.preventDefault();
+        sendRemoteKey('KEYCODE_DPAD_UP');
+        break;
+      case 'ArrowDown':
+        event.preventDefault();
+        sendRemoteKey('KEYCODE_DPAD_DOWN');
+        break;
+      case 'ArrowLeft':
+        event.preventDefault();
+        sendRemoteKey('KEYCODE_DPAD_LEFT');
+        break;
+      case 'ArrowRight':
+        event.preventDefault();
+        sendRemoteKey('KEYCODE_DPAD_RIGHT');
+        break;
+      case 'Enter':
+        event.preventDefault();
+        sendRemoteKey('KEYCODE_DPAD_CENTER');
+        break;
+    }
+  });
 
   window.send = send;
   window.scanNetwork = scanNetwork;
@@ -418,6 +497,8 @@ function setupHandlers() {
   window.startPairing = startPairing;
   window.completePairing = completePairing;
   window.sendRemoteKey = sendRemoteKey;
+  window.sendText = sendText;
+  console.log('Functions attached to window:', { startPairing: typeof window.startPairing, sendText: typeof window.sendText });
 }
 
 if (document.readyState === 'loading') {
@@ -451,6 +532,12 @@ if (typeof window.completePairing !== 'function') {
 if (typeof window.sendRemoteKey !== 'function') {
   window.sendRemoteKey = () => {
     alert('Remote key commands require the Tauri runtime and IRCC configuration. Launch the desktop app to try again.');
+  };
+}
+
+if (typeof window.sendText !== 'function') {
+  window.sendText = () => {
+    alert('Text input requires the Tauri runtime. Launch the desktop app to try again.');
   };
 }
 

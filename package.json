@@ -9,6 +9,7 @@
     "tauri:dev": "cargo tauri dev"
   },
   "devDependencies": {
+    "@tauri-apps/api": "^2.0.0",
     "http-server": "^14.1.1"
   }
 }
